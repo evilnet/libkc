@@ -16,6 +16,7 @@ AC_PROG_CC
 
 # Checks for header files
 AC_CHECK_HEADERS([stdlib.h string.h stddef.h stdbool.h])
+AC_CHECK_HEADERS([sys/socket.h netinet/in.h arpa/inet.h netdb.h])
 
 # Check for libcurl
 AC_CHECK_HEADERS([curl/curl.h], [],
