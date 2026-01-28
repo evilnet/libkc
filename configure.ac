@@ -11,8 +11,8 @@ AM_SILENT_RULES([yes])
 LT_INIT
 
 # Checks for programs
+AM_PROG_AR
 AC_PROG_CC
-AC_PROG_CC_C99
 
 # Checks for header files
 AC_CHECK_HEADERS([stdlib.h string.h stddef.h stdbool.h])
