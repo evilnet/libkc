@@ -16,6 +16,7 @@
 #include "kc_keycloak.h"
 #include "kc.h"
 #include "kc_http.h"
+#include "kc_url.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -57,78 +58,9 @@ static int g_token_waiter_count = 0;
 /* Forward declarations */
 static void token_refresh_done(struct kc_http_response *resp, void *data);
 static void notify_token_waiters(int result, const struct kc_access_token *token);
-static char *build_token_endpoint(void);
-static char *build_url(const char *fmt, ...);
 
-/* ================================================================
- * URL building helpers
- * ================================================================ */
-
-/*
- * Build a URL from format string. Returns allocated string (caller frees).
- */
-static char *build_url(const char *fmt, ...)
-{
-    char buf[2048];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    return strdup(buf);
-}
-
-static char *build_token_endpoint(void)
-{
-    return build_url("%s/realms/%s/protocol/openid-connect/token",
-                     g_config.base_url, g_config.realm);
-}
-
-static char *build_introspect_endpoint(void)
-{
-    return build_url("%s/realms/%s/protocol/openid-connect/introspect",
-                     g_config.base_url, g_config.realm);
-}
-
-static char *build_users_endpoint(void)
-{
-    return build_url("%s/admin/realms/%s/users",
-                     g_config.base_url, g_config.realm);
-}
-
-static char *build_user_endpoint(const char *user_id)
-{
-    return build_url("%s/admin/realms/%s/users/%s",
-                     g_config.base_url, g_config.realm, user_id);
-}
-
-static char *build_user_by_username_endpoint(const char *escaped_username)
-{
-    return build_url("%s/admin/realms/%s/users?username=%s&exact=true",
-                     g_config.base_url, g_config.realm, escaped_username);
-}
-
-static char *build_user_groups_endpoint(const char *user_id)
-{
-    return build_url("%s/admin/realms/%s/users/%s/groups",
-                     g_config.base_url, g_config.realm, user_id);
-}
-
-static char *build_user_group_endpoint(const char *user_id, const char *group_id)
-{
-    return build_url("%s/admin/realms/%s/users/%s/groups/%s",
-                     g_config.base_url, g_config.realm, user_id, group_id);
-}
-
-static char *build_jwks_endpoint(void)
-{
-    return build_url("%s/realms/%s/protocol/openid-connect/certs",
-                     g_config.base_url, g_config.realm);
-}
-
-static char *build_reset_password_endpoint(const char *user_id)
-{
-    return build_url("%s/admin/realms/%s/users/%s/reset-password",
-                     g_config.base_url, g_config.realm, user_id);
+static struct kc_realm get_realm(void) {
+    return (struct kc_realm){ .base_url = g_config.base_url, .realm = g_config.realm };
 }
 
 /* ================================================================
@@ -276,30 +208,6 @@ struct userid_cache_entry {
 static struct userid_cache_entry g_userid_cache[USERID_CACHE_MAX];
 static int g_userid_cache_count = 0;
 
-static const char *userid_cache_get(const char *username)
-{
-    const struct kc_event_ops *ops = kc_get_event_ops();
-    unsigned long now = ops ? ops->now() : 0;
-
-    for (int i = 0; i < g_userid_cache_count; i++) {
-        if (g_userid_cache[i].username &&
-            strcmp(g_userid_cache[i].username, username) == 0) {
-            if ((unsigned long)g_userid_cache[i].expires > now) {
-                g_kc_stats.cache_hits++;
-                return g_userid_cache[i].user_id;
-            }
-            /* Expired — remove */
-            free(g_userid_cache[i].username);
-            free(g_userid_cache[i].user_id);
-            g_userid_cache[i] = g_userid_cache[--g_userid_cache_count];
-            g_kc_stats.cache_misses++;
-            return NULL;
-        }
-    }
-    g_kc_stats.cache_misses++;
-    return NULL;
-}
-
 static void userid_cache_put(const char *username, const char *user_id)
 {
     const struct kc_event_ops *ops = kc_get_event_ops();
@@ -404,7 +312,7 @@ static void token_refresh_done(struct kc_http_response *resp, void *data)
 
     /* Set expiry */
     const struct kc_event_ops *ops = kc_get_event_ops();
-    g_token_expires = (ops ? ops->now() : time(NULL)) + new_token->expires_in;
+    g_token_expires = (ops ? ops->now() : (unsigned long)time(NULL)) + new_token->expires_in;
 
     kc_log_debug("kc_keycloak: token refreshed, expires_in=%ld", new_token->expires_in);
 
@@ -422,7 +330,7 @@ static int start_token_refresh(void)
     if (g_token_refreshing)
         return 0;  /* Already in progress */
 
-    url = build_token_endpoint();
+    url = kc_url_token(get_realm());
     if (!url)
         return -1;
 
@@ -946,7 +854,7 @@ int kc_user_get(const char *username, kc_user_cb cb, void *data)
     ctx->op = OP_GET_USER;
     ctx->cb.user = cb;
     ctx->cb_data = data;
-    ctx->url = build_user_by_username_endpoint(escaped);
+    ctx->url = kc_url_user_by_username(get_realm(), escaped, 1);
     ctx->method = "GET";
     ctx->username = strdup(username);
 
@@ -967,7 +875,7 @@ int kc_user_get_by_id(const char *id, kc_user_cb cb, void *data)
     ctx->op = OP_GET_USER;
     ctx->cb.user = cb;
     ctx->cb_data = data;
-    ctx->url = build_user_endpoint(id);
+    ctx->url = kc_url_user(get_realm(), id);
     ctx->method = "GET";
 
     return start_op(ctx);
@@ -1031,7 +939,7 @@ int kc_user_create(const char *username, const char *email,
     ctx->op = OP_CREATE_USER;
     ctx->cb.result = cb;
     ctx->cb_data = data;
-    ctx->url = build_users_endpoint();
+    ctx->url = kc_url_users(get_realm());
     ctx->method = "POST";
     ctx->body = body;
     ctx->headers = curl_slist_append(NULL, "Content-Type: application/json");
@@ -1052,7 +960,7 @@ int kc_user_delete(const char *id, kc_result_cb cb, void *data)
     ctx->op = OP_DELETE_USER;
     ctx->cb.result = cb;
     ctx->cb_data = data;
-    ctx->url = build_user_endpoint(id);
+    ctx->url = kc_url_user(get_realm(), id);
     ctx->method = "DELETE";
 
     return start_op(ctx);
@@ -1076,7 +984,7 @@ int kc_user_update(const char *id, json_t *repr, kc_result_cb cb, void *data)
     ctx->op = OP_UPDATE_USER;
     ctx->cb.result = cb;
     ctx->cb_data = data;
-    ctx->url = build_user_endpoint(id);
+    ctx->url = kc_url_user(get_realm(), id);
     ctx->method = "PUT";
     ctx->body = body;
     ctx->headers = curl_slist_append(NULL, "Content-Type: application/json");
@@ -1114,7 +1022,7 @@ int kc_user_set_password(const char *id, const char *password,
     ctx->op = OP_SET_PASSWORD;
     ctx->cb.result = cb;
     ctx->cb_data = data;
-    ctx->url = build_reset_password_endpoint(id);
+    ctx->url = kc_url_user_reset_password(get_realm(), id);
     ctx->method = "PUT";
     ctx->body = body;
     ctx->headers = curl_slist_append(NULL, "Content-Type: application/json");
@@ -1129,7 +1037,7 @@ int kc_user_verify_password(const char *username, const char *password,
         return -1;
 
     /* Resource owner password grant — doesn't need admin token */
-    char *url = build_token_endpoint();
+    char *url = kc_url_token(get_realm());
     if (!url)
         return -1;
 
@@ -1208,7 +1116,7 @@ int kc_user_get_groups(const char *user_id, kc_groups_cb cb, void *data)
     ctx->op = OP_GET_GROUPS;
     ctx->cb.groups = cb;
     ctx->cb_data = data;
-    ctx->url = build_user_groups_endpoint(user_id);
+    ctx->url = kc_url_user_groups(get_realm(), user_id);
     ctx->method = "GET";
 
     return start_op(ctx);
@@ -1227,7 +1135,7 @@ int kc_user_add_group(const char *user_id, const char *group_id,
     ctx->op = OP_ADD_GROUP;
     ctx->cb.result = cb;
     ctx->cb_data = data;
-    ctx->url = build_user_group_endpoint(user_id, group_id);
+    ctx->url = kc_url_user_group(get_realm(), user_id, group_id);
     ctx->method = "PUT";
 
     return start_op(ctx);
@@ -1246,7 +1154,7 @@ int kc_user_remove_group(const char *user_id, const char *group_id,
     ctx->op = OP_REMOVE_GROUP;
     ctx->cb.result = cb;
     ctx->cb_data = data;
-    ctx->url = build_user_group_endpoint(user_id, group_id);
+    ctx->url = kc_url_user_group(get_realm(), user_id, group_id);
     ctx->method = "DELETE";
 
     return start_op(ctx);
@@ -1261,7 +1169,7 @@ int kc_token_introspect(const char *token, kc_introspect_cb cb, void *data)
     if (!token || !cb)
         return -1;
 
-    char *url = build_introspect_endpoint();
+    char *url = kc_url_introspect(get_realm());
     if (!url)
         return -1;
 
@@ -1333,7 +1241,7 @@ int kc_jwks_refresh(kc_result_cb cb, void *data)
     ctx->op = OP_JWKS_REFRESH;
     ctx->cb.result = cb;
     ctx->cb_data = data;
-    ctx->url = build_jwks_endpoint();
+    ctx->url = kc_url_jwks(get_realm());
     ctx->method = "GET";
 
     /* JWKS endpoint is public — no token needed */
