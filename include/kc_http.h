@@ -24,6 +24,8 @@ struct kc_http_request {
     size_t body_len;              /* Length of body (0 if NULL) */
     struct curl_slist *headers;   /* Additional headers, or NULL */
     const char *bearer_token;     /* Authorization: Bearer <token>, or NULL */
+    const char *auth_user;        /* HTTP Basic auth username, or NULL */
+    const char *auth_passwd;      /* HTTP Basic auth password, or NULL */
     long timeout_ms;              /* Per-request timeout (0 = default) */
 };
 

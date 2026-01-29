@@ -181,6 +181,14 @@ int kc_http_request(const struct kc_http_request *req,
         curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
     }
 
+    /* HTTP Basic auth */
+    if (req->auth_user) {
+        curl_easy_setopt(easy, CURLOPT_USERNAME, req->auth_user);
+        if (req->auth_passwd)
+            curl_easy_setopt(easy, CURLOPT_PASSWORD, req->auth_passwd);
+        curl_easy_setopt(easy, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    }
+
     /* Timeout */
     if (req->timeout_ms > 0)
         curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, req->timeout_ms);
@@ -205,6 +213,15 @@ int kc_http_request(const struct kc_http_request *req,
         request_ctx_free(ctx);
         return -1;
     }
+
+    /* Kick curl to start processing the new handle immediately.
+     * curl_multi_socket_action with CURL_SOCKET_TIMEOUT triggers DNS
+     * resolution and socket creation, which registers fds with the
+     * event loop via curl_socket_cb. Without this, curl has no sockets
+     * registered and the event loop never delivers events to drive
+     * the transfer forward. */
+    curl_multi_socket_action(g_multi, CURL_SOCKET_TIMEOUT, 0, &g_running);
+    check_multi_info();
 
     g_stats.requests_total++;
     return 0;
