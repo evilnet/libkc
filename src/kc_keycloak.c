@@ -450,6 +450,7 @@ struct kc_op_ctx {
         OP_GET_GROUPS,
         OP_ADD_GROUP,
         OP_REMOVE_GROUP,
+        OP_SEARCH_USERS,
         OP_INTROSPECT,
         OP_JWKS_REFRESH
     } op;
@@ -529,6 +530,50 @@ static void op_response_handler(struct kc_http_response *resp, void *data)
             }
         } else {
             ctx->cb.user(KC_INVALID_RESPONSE, NULL, ctx->cb_data);
+        }
+        break;
+    }
+
+    case OP_SEARCH_USERS: {
+        if (!resp || resp->status_code == 0) {
+            ctx->cb.users(KC_ERROR, NULL, 0, ctx->cb_data);
+            break;
+        }
+        if (resp->status_code != 200 || !resp->json) {
+            ctx->cb.users(KC_ERROR, NULL, 0, ctx->cb_data);
+            break;
+        }
+        if (!json_is_array(resp->json)) {
+            ctx->cb.users(KC_INVALID_RESPONSE, NULL, 0, ctx->cb_data);
+            break;
+        }
+
+        size_t count = json_array_size(resp->json);
+        if (count == 0) {
+            ctx->cb.users(KC_NOT_FOUND, NULL, 0, ctx->cb_data);
+            break;
+        }
+
+        struct kc_user *users = calloc(count, sizeof(*users));
+        if (!users) {
+            ctx->cb.users(KC_ERROR, NULL, 0, ctx->cb_data);
+            break;
+        }
+
+        size_t valid = 0;
+        for (size_t i = 0; i < count; i++) {
+            if (parse_user(json_array_get(resp->json, i), &users[valid]) == 0)
+                valid++;
+        }
+
+        if (valid == 0) {
+            free(users);
+            ctx->cb.users(KC_NOT_FOUND, NULL, 0, ctx->cb_data);
+        } else {
+            ctx->cb.users(KC_SUCCESS, users, (int)valid, ctx->cb_data);
+            for (size_t i = 0; i < valid; i++)
+                kc_user_free(&users[i]);
+            free(users);
         }
         break;
     }
@@ -707,6 +752,9 @@ static void op_token_ready(int result, const struct kc_access_token *token, void
         case OP_GET_USER:
             ctx->cb.user(KC_TOKEN_ERROR, NULL, ctx->cb_data);
             break;
+        case OP_SEARCH_USERS:
+            ctx->cb.users(KC_TOKEN_ERROR, NULL, 0, ctx->cb_data);
+            break;
         case OP_VERIFY_PASSWORD:
             ctx->cb.token(KC_TOKEN_ERROR, NULL, ctx->cb_data);
             break;
@@ -740,6 +788,9 @@ static void op_token_ready(int result, const struct kc_access_token *token, void
         switch (ctx->op) {
         case OP_GET_USER:
             ctx->cb.user(KC_ERROR, NULL, ctx->cb_data);
+            break;
+        case OP_SEARCH_USERS:
+            ctx->cb.users(KC_ERROR, NULL, 0, ctx->cb_data);
             break;
         case OP_VERIFY_PASSWORD:
             ctx->cb.token(KC_ERROR, NULL, ctx->cb_data);
@@ -883,9 +934,48 @@ int kc_user_get_by_id(const char *id, kc_user_cb cb, void *data)
 
 int kc_user_search(const char *query, bool exact, kc_users_cb cb, void *data)
 {
-    (void)query; (void)exact; (void)cb; (void)data;
-    /* TODO: Phase C - implement search returning multiple users */
-    return -1;
+    if (!query || !cb)
+        return -1;
+
+    struct kc_op_ctx *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx)
+        return -1;
+
+    ctx->op = OP_SEARCH_USERS;
+    ctx->cb.users = cb;
+    ctx->cb_data = data;
+    ctx->method = "GET";
+
+    /* If query contains ':', it's an attribute search (e.g. "x509_fingerprints:ABC").
+     * kc_url_fingerprint_search builds the full q= parameter — only escape the
+     * value part (after the colon).
+     * Otherwise, it's a username search — escape the whole query. */
+    const char *colon = strchr(query, ':');
+    if (colon) {
+        const char *value = colon + 1;
+        char *escaped = curl_easy_escape(NULL, value, 0);
+        if (!escaped) {
+            op_ctx_free(ctx);
+            return -1;
+        }
+        ctx->url = kc_url_fingerprint_search(get_realm(), escaped);
+        curl_free(escaped);
+    } else {
+        char *escaped = curl_easy_escape(NULL, query, 0);
+        if (!escaped) {
+            op_ctx_free(ctx);
+            return -1;
+        }
+        ctx->url = kc_url_user_by_username(get_realm(), escaped, exact ? 1 : 0);
+        curl_free(escaped);
+    }
+
+    if (!ctx->url) {
+        op_ctx_free(ctx);
+        return -1;
+    }
+
+    return start_op(ctx);
 }
 
 int kc_user_create(const char *username, const char *email,
