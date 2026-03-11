@@ -30,6 +30,13 @@ void kc_jwt_cleanup(void);
 /* Get JWT stats snapshot */
 void kc_jwt_stats_get(struct kc_jwt_stats *out);
 
+/* Prime the JWKS cache by fetching keys from Keycloak.
+ * Call at startup to avoid blocking on first JWT validation.
+ * @param realm   Keycloak realm config (for JWKS endpoint)
+ * @return KC_SUCCESS (0) or KC_ERROR (-1)
+ */
+int kc_jwt_prime_cache(struct kc_realm realm);
+
 /* Validate a JWT token locally using cached JWKS keys.
  * Fetches/refreshes JWKS from Keycloak if needed (sync HTTP).
  * @param realm   Keycloak realm config (for JWKS endpoint)
