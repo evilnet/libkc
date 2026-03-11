@@ -48,6 +48,7 @@ struct kc_request_ctx {
     size_t response_buf_len;
     size_t response_buf_alloc;
     unsigned long start_time;
+    struct curl_slist *owned_headers;  /* Headers owned by this request */
 };
 
 /* --- Forward declarations --- */
@@ -159,26 +160,37 @@ int kc_http_request(const struct kc_http_request *req,
         /* GET is default */
     }
 
-    /* Body */
+    /* Body — use COPYPOSTFIELDS so curl owns the data and callers
+     * can safely free their buffer after kc_http_request returns.
+     * POSTFIELDSIZE must be set BEFORE COPYPOSTFIELDS per curl docs. */
     if (req->body && req->body_len > 0) {
-        curl_easy_setopt(easy, CURLOPT_POSTFIELDS, req->body);
         curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE, (long)req->body_len);
+        curl_easy_setopt(easy, CURLOPT_COPYPOSTFIELDS, req->body);
     }
 
-    /* Headers */
-    if (req->headers)
-        curl_easy_setopt(easy, CURLOPT_HTTPHEADER, req->headers);
+    /* Headers — deep-copy into a new slist owned by the request context.
+     * Callers free their slist after kc_http_request returns, but curl
+     * still references the headers until the transfer completes. */
+    {
+        struct curl_slist *owned = NULL;
+        const struct curl_slist *src;
 
-    /* Bearer token */
-    if (req->bearer_token) {
-        char auth_header[2048];
-        snprintf(auth_header, sizeof(auth_header),
-                 "Authorization: Bearer %s", req->bearer_token);
-        /* Need to append to headers list */
-        struct curl_slist *headers = req->headers ?
-            curl_slist_append(req->headers, auth_header) :
-            curl_slist_append(NULL, auth_header);
-        curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
+        /* Copy caller's headers */
+        for (src = req->headers; src; src = src->next)
+            owned = curl_slist_append(owned, src->data);
+
+        /* Append bearer token header if present */
+        if (req->bearer_token) {
+            char auth_header[2048];
+            snprintf(auth_header, sizeof(auth_header),
+                     "Authorization: Bearer %s", req->bearer_token);
+            owned = curl_slist_append(owned, auth_header);
+        }
+
+        if (owned) {
+            curl_easy_setopt(easy, CURLOPT_HTTPHEADER, owned);
+            ctx->owned_headers = owned;
+        }
     }
 
     /* HTTP Basic auth */
@@ -407,10 +419,22 @@ static void check_multi_info(void)
                 ctx->response.status_code = 0;
                 ctx->response.error = curl_easy_strerror(msg->data.result);
                 g_stats.requests_error++;
+                if (g_log) {
+                    char *url = NULL;
+                    curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &url);
+                    g_log->log(KC_LOG_ERROR, "kc_http: request failed: %s (url=%s)",
+                               ctx->response.error, url ? url : "?");
+                }
             } else if (status_code >= 200 && status_code < 300) {
                 g_stats.requests_success++;
             } else {
                 g_stats.requests_error++;
+                if (g_log) {
+                    char *url = NULL;
+                    curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &url);
+                    g_log->log(KC_LOG_WARNING, "kc_http: HTTP %ld from %s",
+                               status_code, url ? url : "?");
+                }
             }
 
             /* Try to parse JSON response */
@@ -495,6 +519,8 @@ static void request_ctx_free(struct kc_request_ctx *ctx)
         return;
     if (ctx->easy)
         curl_easy_cleanup(ctx->easy);
+    if (ctx->owned_headers)
+        curl_slist_free_all(ctx->owned_headers);
     free(ctx->response_buf);
     free(ctx);
 }
