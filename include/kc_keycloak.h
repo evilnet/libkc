@@ -63,6 +63,15 @@ struct kc_user {
     size_t email_size;
     bool email_verified;
     int opserv_level;             /* Custom attribute: x3_opserv_level */
+
+    /* SCRAM-SHA-256 credentials (from user attributes, may be NULL) */
+    char *scram_salt;             /* x3_scram_sha256_salt (base64) */
+    int   scram_iterations;       /* x3_scram_sha256_iterations */
+    char *scram_stored_key;       /* x3_scram_sha256_stored_key (base64) */
+    char *scram_server_key;       /* x3_scram_sha256_server_key (base64) */
+
+    /* ECDSA public key (from user attributes, may be NULL) */
+    char *ecdsa_pubkey;           /* ecdsa_pubkey (PEM or base64) */
 };
 
 /* Token introspection result */

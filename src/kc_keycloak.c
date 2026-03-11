@@ -93,6 +93,18 @@ static int json_get_bool(json_t *obj, const char *key, int def)
     return def;
 }
 
+/* Extract first string from a Keycloak user attribute (stored as ["value"]) */
+static char *json_get_attr_string(json_t *attrs, const char *key)
+{
+    json_t *arr = json_object_get(attrs, key);
+    if (!arr || !json_is_array(arr) || json_array_size(arr) == 0)
+        return NULL;
+    json_t *first = json_array_get(arr, 0);
+    if (!first || !json_is_string(first))
+        return NULL;
+    return strdup(json_string_value(first));
+}
+
 static struct kc_access_token *parse_access_token(json_t *json)
 {
     struct kc_access_token *tok;
@@ -156,7 +168,7 @@ static int parse_user(json_t *json, struct kc_user *user)
 
     user->email_verified = json_get_bool(json, "emailVerified", 0);
 
-    /* Extract opserv_level from attributes */
+    /* Extract custom attributes (Keycloak stores as {"key": ["value"]}) */
     json_t *attrs = json_object_get(json, "attributes");
     if (attrs && json_is_object(attrs)) {
         json_t *olevel = json_object_get(attrs, "x3_opserv_level");
@@ -165,6 +177,21 @@ static int parse_user(json_t *json, struct kc_user *user)
             if (first && json_is_string(first))
                 user->opserv_level = atoi(json_string_value(first));
         }
+
+        /* SCRAM-SHA-256 credentials */
+        user->scram_salt       = json_get_attr_string(attrs, "x3_scram_sha256_salt");
+        user->scram_stored_key = json_get_attr_string(attrs, "x3_scram_sha256_stored_key");
+        user->scram_server_key = json_get_attr_string(attrs, "x3_scram_sha256_server_key");
+
+        json_t *iter = json_object_get(attrs, "x3_scram_sha256_iterations");
+        if (iter && json_is_array(iter) && json_array_size(iter) > 0) {
+            json_t *first = json_array_get(iter, 0);
+            if (first && json_is_string(first))
+                user->scram_iterations = atoi(json_string_value(first));
+        }
+
+        /* ECDSA public key */
+        user->ecdsa_pubkey = json_get_attr_string(attrs, "ecdsa_pubkey");
     }
 
     return 0;
@@ -1397,6 +1424,10 @@ void kc_user_free(struct kc_user *user)
     free(user->id);
     free(user->username);
     free(user->email);
+    free(user->scram_salt);
+    free(user->scram_stored_key);
+    free(user->scram_server_key);
+    free(user->ecdsa_pubkey);
 }
 
 void kc_token_info_free(struct kc_token_info *info)
