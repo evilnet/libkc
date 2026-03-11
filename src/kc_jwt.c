@@ -636,6 +636,12 @@ kc_jwt_cleanup(void)
     jwks_cleanup();
 }
 
+int
+kc_jwt_prime_cache(struct kc_realm realm)
+{
+    return jwks_refresh(realm);
+}
+
 void
 kc_jwt_stats_get(struct kc_jwt_stats *out)
 {
