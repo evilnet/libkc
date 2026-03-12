@@ -16,6 +16,7 @@
 #include "kc_keycloak.h"
 #include "kc.h"
 #include "kc_http.h"
+#include "kc_jwt.h"
 #include "kc_url.h"
 
 #include <stdlib.h>
@@ -105,6 +106,31 @@ static char *json_get_attr_string(json_t *attrs, const char *key)
     return strdup(json_string_value(first));
 }
 
+/*
+ * Parse LDAP generalized time format (YYYYMMDDHHMMSSZ) to epoch seconds.
+ * Returns 0 on failure.
+ */
+static long
+parse_ldap_time(const char *s)
+{
+    int y, mo, d, h, mi, sec;
+    struct tm tm;
+
+    if (!s || sscanf(s, "%4d%2d%2d%2d%2d%2d", &y, &mo, &d, &h, &mi, &sec) != 6)
+        return 0;
+
+    memset(&tm, 0, sizeof(tm));
+    tm.tm_year = y - 1900;
+    tm.tm_mon  = mo - 1;
+    tm.tm_mday = d;
+    tm.tm_hour = h;
+    tm.tm_min  = mi;
+    tm.tm_sec  = sec;
+    tm.tm_isdst = 0;
+
+    return (long)timegm(&tm);
+}
+
 static struct kc_access_token *parse_access_token(json_t *json)
 {
     struct kc_access_token *tok;
@@ -143,6 +169,9 @@ static struct kc_access_token *parse_access_token(json_t *json)
         kc_access_token_free(tok);
         return NULL;
     }
+
+    /* Extract created_at from the JWT access token without verification */
+    tok->created_at = kc_jwt_extract_created_at(tok->access_token);
 
     return tok;
 }
@@ -202,6 +231,14 @@ static int parse_user(json_t *json, struct kc_user *user)
 
         /* ECDSA public key */
         user->ecdsa_pubkey = json_get_attr_string(attrs, "ecdsa_pubkey");
+
+        /* Account creation time (LDAP generalized time from Keycloak's built-in
+         * LDAP User Attribute Mapper for createTimestamp) */
+        char *created_str = json_get_attr_string(attrs, "createTimestamp");
+        if (created_str) {
+            user->created_at = parse_ldap_time(created_str);
+            free(created_str);
+        }
     }
 
     return 0;

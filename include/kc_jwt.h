@@ -51,4 +51,12 @@ int kc_jwt_validate_local(struct kc_realm realm, const char *token,
  * Frees both the fields and the struct itself. */
 void kc_jwt_token_info_free(struct kc_token_info *info);
 
+/* Extract created_at claim from JWT without signature verification.
+ * Used by PLAIN SASL path where we have the access token but don't need
+ * full validation (Keycloak already verified the password).
+ * @param token  Raw JWT string (header.payload.signature)
+ * @return epoch seconds, or 0 if claim not present or parsing fails
+ */
+long kc_jwt_extract_created_at(const char *token);
+
 #endif /* KC_JWT_H */

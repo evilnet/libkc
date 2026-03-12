@@ -51,6 +51,7 @@ struct kc_access_token {
     size_t session_state_size;
     char *scope;
     size_t scope_size;
+    long created_at;              /* Account creation time (epoch), from JWT created_at claim */
 };
 
 /* User representation */
@@ -72,6 +73,8 @@ struct kc_user {
 
     /* ECDSA public key (from user attributes, may be NULL) */
     char *ecdsa_pubkey;           /* ecdsa_pubkey (PEM or base64) */
+
+    long created_at;              /* Account creation time (epoch), from createdAt user attribute */
 };
 
 /* Token introspection result */
@@ -86,6 +89,7 @@ struct kc_token_info {
     int opserv_level;
     long exp;                     /* Expiration timestamp */
     long iat;                     /* Issued at timestamp */
+    long created_at;              /* Account creation time (epoch), from created_at JWT claim */
 };
 
 /* Group representation */

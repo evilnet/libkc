@@ -405,6 +405,32 @@ jwt_verify_signature(const char *token, EVP_PKEY *pkey)
     return result;
 }
 
+/*
+ * Parse LDAP generalized time format (YYYYMMDDHHMMSSZ) to epoch seconds.
+ * Returns 0 on failure.
+ */
+static long
+parse_ldap_time(const char *s)
+{
+    int y, mo, d, h, mi, sec;
+    struct tm tm;
+
+    if (!s || sscanf(s, "%4d%2d%2d%2d%2d%2d", &y, &mo, &d, &h, &mi, &sec) != 6)
+        return 0;
+
+    memset(&tm, 0, sizeof(tm));
+    tm.tm_year = y - 1900;
+    tm.tm_mon  = mo - 1;
+    tm.tm_mday = d;
+    tm.tm_hour = h;
+    tm.tm_min  = mi;
+    tm.tm_sec  = sec;
+    tm.tm_isdst = 0;
+
+    /* LDAP generalized time is always UTC. Use timegm (POSIX.1-2024). */
+    return (long)timegm(&tm);
+}
+
 /* Parse JWT claims from payload */
 static int
 jwt_parse_claims(const char *payload_b64, struct kc_token_info *info)
@@ -475,6 +501,12 @@ jwt_parse_claims(const char *payload_b64, struct kc_token_info *info)
     json_t *opserv_level = json_object_get(root, "x3_opserv_level");
     if (json_is_integer(opserv_level)) {
         info->opserv_level = json_integer_value(opserv_level);
+    }
+
+    /* Extract account creation time from custom claim (LDAP generalized time string) */
+    json_t *created = json_object_get(root, "created_at");
+    if (json_is_string(created)) {
+        info->created_at = parse_ldap_time(json_string_value(created));
     }
 
     info->active = true;
@@ -648,4 +680,51 @@ kc_jwt_stats_get(struct kc_jwt_stats *out)
     if (out) {
         *out = jwt_stats;
     }
+}
+
+long
+kc_jwt_extract_created_at(const char *token)
+{
+    if (!token)
+        return 0;
+
+    /* Find payload between first and second '.' */
+    const char *dot1 = strchr(token, '.');
+    if (!dot1) return 0;
+    const char *dot2 = strchr(dot1 + 1, '.');
+    if (!dot2) return 0;
+
+    size_t payload_b64_len = dot2 - dot1 - 1;
+    char *payload_b64 = malloc(payload_b64_len + 1);
+    if (!payload_b64) return 0;
+    memcpy(payload_b64, dot1 + 1, payload_b64_len);
+    payload_b64[payload_b64_len] = '\0';
+
+    size_t payload_len = 0;
+    char *payload = base64url_decode_alloc(payload_b64, &payload_len);
+    free(payload_b64);
+    if (!payload) return 0;
+
+    char *json_str = malloc(payload_len + 1);
+    if (!json_str) {
+        free(payload);
+        return 0;
+    }
+    memcpy(json_str, payload, payload_len);
+    json_str[payload_len] = '\0';
+    free(payload);
+
+    json_error_t error;
+    json_t *root = json_loads(json_str, 0, &error);
+    free(json_str);
+    if (!root) return 0;
+
+    long result = 0;
+    json_t *created = json_object_get(root, "created_at");
+    if (json_is_string(created)) {
+        result = parse_ldap_time(json_string_value(created));
+    }
+
+    json_decref(root);
+    return result;
 }
