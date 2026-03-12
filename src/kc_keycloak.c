@@ -178,12 +178,22 @@ static int parse_user(json_t *json, struct kc_user *user)
                 user->opserv_level = atoi(json_string_value(first));
         }
 
-        /* SCRAM-SHA-256 credentials */
-        user->scram_salt       = json_get_attr_string(attrs, "x3_scram_sha256_salt");
-        user->scram_stored_key = json_get_attr_string(attrs, "x3_scram_sha256_stored_key");
-        user->scram_server_key = json_get_attr_string(attrs, "x3_scram_sha256_server_key");
+        /* SCRAM-SHA-256 credentials — try SPI names first, fall back to legacy */
+        user->scram_salt       = json_get_attr_string(attrs, "x3_scram_salt");
+        if (!user->scram_salt)
+            user->scram_salt   = json_get_attr_string(attrs, "x3_scram_sha256_salt");
 
-        json_t *iter = json_object_get(attrs, "x3_scram_sha256_iterations");
+        user->scram_stored_key = json_get_attr_string(attrs, "x3_scram_stored_key");
+        if (!user->scram_stored_key)
+            user->scram_stored_key = json_get_attr_string(attrs, "x3_scram_sha256_stored_key");
+
+        user->scram_server_key = json_get_attr_string(attrs, "x3_scram_server_key");
+        if (!user->scram_server_key)
+            user->scram_server_key = json_get_attr_string(attrs, "x3_scram_sha256_server_key");
+
+        json_t *iter = json_object_get(attrs, "x3_scram_iterations");
+        if (!iter)
+            iter = json_object_get(attrs, "x3_scram_sha256_iterations");
         if (iter && json_is_array(iter) && json_array_size(iter) > 0) {
             json_t *first = json_array_get(iter, 0);
             if (first && json_is_string(first))
