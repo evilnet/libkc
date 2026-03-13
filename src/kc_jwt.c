@@ -705,18 +705,9 @@ kc_jwt_extract_created_at(const char *token)
     free(payload_b64);
     if (!payload) return 0;
 
-    char *json_str = malloc(payload_len + 1);
-    if (!json_str) {
-        free(payload);
-        return 0;
-    }
-    memcpy(json_str, payload, payload_len);
-    json_str[payload_len] = '\0';
-    free(payload);
-
     json_error_t error;
-    json_t *root = json_loads(json_str, 0, &error);
-    free(json_str);
+    json_t *root = json_loadb(payload, payload_len, 0, &error);
+    free(payload);
     if (!root) return 0;
 
     long result = 0;
