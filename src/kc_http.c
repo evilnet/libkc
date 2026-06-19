@@ -90,6 +90,20 @@ int kc_http_init(const struct kc_event_ops *ops, const struct kc_log_ops *log)
     curl_multi_setopt(g_multi, CURLMOPT_TIMERFUNCTION, curl_timer_cb);
     curl_multi_setopt(g_multi, CURLMOPT_TIMERDATA, NULL);
 
+    /* Cap libcurl's connection cache.  Without these, the default
+     * MAXCONNECTS grows monotonically with the high-water of easy
+     * handles ever added, and curl_easy_cleanup parks the easy
+     * handle's connection in the share cache rather than closing it.
+     * Under bursty SASL/ROPC traffic the cache grows unbounded and
+     * the cached sockets are alive in the kernel's TCP slab but not
+     * visible in /proc/net/tcp* (they're idle keep-alive parks).
+     * Observed on testnet: 4 SASL hold/revive cyclers drove +85
+     * FDs/min linear growth that didn't drain; 227 of 253 socket FDs
+     * unaccounted in /proc/net/* listings. */
+    curl_multi_setopt(g_multi, CURLMOPT_MAXCONNECTS,           (long)32);
+    curl_multi_setopt(g_multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, (long)64);
+    curl_multi_setopt(g_multi, CURLMOPT_MAX_HOST_CONNECTIONS,  (long)16);
+
     memset(&g_stats, 0, sizeof(g_stats));
     g_running = 0;
 
