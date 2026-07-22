@@ -793,6 +793,14 @@ static void op_response_handler(struct kc_http_response *resp, void *data)
         if (info.sub) info.sub_size = strlen(info.sub);
         info.exp = json_get_long(resp->json, "exp", 0);
         info.iat = json_get_long(resp->json, "iat", 0);
+        /* Issuer and authorized-party: the introspection response carries the
+         * same iss/azp claims as the token itself, so the caller can apply the
+         * identical deployment policy (expected-issuer + allowed-client) on the
+         * introspection path as on local JWT validation. */
+        info.iss = json_get_string(resp->json, "iss");
+        if (info.iss) info.iss_size = strlen(info.iss);
+        info.azp = json_get_string(resp->json, "azp");
+        if (info.azp) info.azp_size = strlen(info.azp);
         ctx->cb.introspect(KC_SUCCESS, &info, ctx->cb_data);
         kc_token_info_free(&info);
         break;
@@ -1484,6 +1492,8 @@ void kc_token_info_free(struct kc_token_info *info)
     free(info->username);
     free(info->email);
     free(info->sub);
+    free(info->iss);
+    free(info->azp);
 }
 
 void kc_group_free(struct kc_group *group)

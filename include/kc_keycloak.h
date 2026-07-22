@@ -89,7 +89,12 @@ struct kc_token_info {
     int opserv_level;
     long exp;                     /* Expiration timestamp */
     long iat;                     /* Issued at timestamp */
+    long nbf;                     /* Not-before timestamp (0 if the claim is absent) */
     long created_at;              /* Account creation time (epoch), from created_at JWT claim */
+    char *iss;                    /* Issuer (iss claim) - for deployment issuer policy */
+    size_t iss_size;
+    char *azp;                    /* Authorized party (azp claim) - the issuing client id */
+    size_t azp_size;
 };
 
 /* Group representation */

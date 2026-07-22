@@ -34,6 +34,9 @@
 /* Module-static statistics */
 static struct kc_jwt_stats jwt_stats = {0};
 
+/* Clock-skew tolerance (seconds) applied to time-based claim checks (nbf). */
+#define KC_JWT_CLOCK_SKEW 60
+
 /*
  * =============================================================================
  * JWKS Cache for Local JWT Validation
@@ -462,24 +465,58 @@ jwt_parse_claims(const char *payload_b64, struct kc_token_info *info)
 
     /* Extract standard claims */
     json_t *exp = json_object_get(root, "exp");
+    json_t *nbf = json_object_get(root, "nbf");
     json_t *iat = json_object_get(root, "iat");
     json_t *sub = json_object_get(root, "sub");
+    json_t *iss = json_object_get(root, "iss");
+    json_t *azp = json_object_get(root, "azp");
     json_t *preferred_username = json_object_get(root, "preferred_username");
     json_t *email = json_object_get(root, "email");
 
-    /* Check expiration */
-    if (json_is_integer(exp)) {
-        info->exp = json_integer_value(exp);
-        time_t current_time = time(NULL);
-        if (info->exp <= current_time) {
-            kc_log_debug("JWT expired: exp=%ld now=%ld", info->exp, (long)current_time);
+    time_t current_time = time(NULL);
+
+    /* Expiration is mandatory.  A token with no exp claim would otherwise be
+     * accepted forever, so treat a missing/invalid exp as a hard failure. */
+    if (!json_is_integer(exp)) {
+        kc_log_debug("JWT rejected: missing or invalid exp claim");
+        json_decref(root);
+        return KC_FORBIDDEN;
+    }
+    info->exp = json_integer_value(exp);
+    if (info->exp <= current_time) {
+        kc_log_debug("JWT expired: exp=%ld now=%ld", info->exp, (long)current_time);
+        json_decref(root);
+        return KC_FORBIDDEN;  /* Token expired */
+    }
+
+    /* Not-before: reject a token presented before its validity window opens.
+     * Keycloak does not always emit nbf, so enforce it only when present, with
+     * a small clock-skew tolerance. */
+    if (json_is_integer(nbf)) {
+        info->nbf = json_integer_value(nbf);
+        if (info->nbf > current_time + KC_JWT_CLOCK_SKEW) {
+            kc_log_debug("JWT not yet valid: nbf=%ld now=%ld", info->nbf, (long)current_time);
             json_decref(root);
-            return KC_FORBIDDEN;  /* Token expired */
+            return KC_FORBIDDEN;
         }
     }
 
     if (json_is_integer(iat)) {
         info->iat = json_integer_value(iat);
+    }
+
+    /* Issuer and authorized-party: extracted for the caller's deployment
+     * policy (expected-issuer + allowed-client checks).  The JWKS signature
+     * already binds the token to the realm keys; these let the caller also
+     * pin which realm URL and which client the token must come from. */
+    if (json_is_string(iss)) {
+        info->iss = strdup(json_string_value(iss));
+        info->iss_size = strlen(info->iss);
+    }
+
+    if (json_is_string(azp)) {
+        info->azp = strdup(json_string_value(azp));
+        info->azp_size = strlen(info->azp);
     }
 
     if (json_is_string(sub)) {
