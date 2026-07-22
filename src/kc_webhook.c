@@ -23,6 +23,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <openssl/crypto.h>   /* CRYPTO_memcmp - constant-time secret compare */
 
 /* ===================================================================
  * Defaults
@@ -183,6 +184,11 @@ kc_webhook_init(const struct kc_webhook_config *config,
 
     free(cfg_secret);
     cfg_secret = config->secret ? strdup(config->secret) : NULL;
+
+    if (!cfg_secret || !cfg_secret[0])
+        kc_log_warning("kc_webhook: SECURITY - no webhook secret configured; "
+                       "all incoming webhook events will be REJECTED. Set a "
+                       "secret to enable the endpoint.");
 
     free(cfg_path);
     cfg_path = config->path ? strdup(config->path) : NULL;
@@ -610,10 +616,22 @@ process_request(struct wh_conn *conn)
         }
     }
 
-    /* Verify secret if configured */
-    if (cfg_secret && cfg_secret[0]) {
-        if (!conn->secret_header[0] ||
-            strcmp(conn->secret_header, cfg_secret) != 0) {
+    /* Verify secret (fail closed).  A webhook with no configured secret is an
+     * unauthenticated destructive endpoint, so reject every request when none
+     * is set (a loud warning is also logged once at init).  When a secret is
+     * set, compare in constant time (length check, then CRYPTO_memcmp) so the
+     * secret is not leaked through a comparison timing side-channel. */
+    if (!cfg_secret || !cfg_secret[0]) {
+        kc_log_warning("kc_webhook: rejecting event - no webhook secret "
+                       "configured (endpoint disabled until one is set)");
+        stats.events_invalid++;
+        return -1;
+    }
+    {
+        size_t provided_len = strlen(conn->secret_header);
+        size_t expected_len = strlen(cfg_secret);
+        if (provided_len != expected_len ||
+            CRYPTO_memcmp(conn->secret_header, cfg_secret, expected_len) != 0) {
             kc_log_warning("kc_webhook: invalid/missing secret");
             stats.events_invalid++;
             return -1;
